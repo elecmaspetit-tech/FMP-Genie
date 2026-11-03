@@ -41,8 +41,9 @@ gradle=p/'app/build.gradle'
 change(gradle, 'versionCode 1','versionCode 2')
 change(gradle, "versionName '1.0.0'", "versionName '1.1.0'")
 check=p/'tests/check_project.py'
-change(check, "assert 'BIND_ACCESSIBILITY_SERVICE' in manifest", "assert 'BIND_ACCESSIBILITY_SERVICE' not in manifest")
-change(check, "'FmpReaderService',", '')
-change(check, '''assert '<service' in manifest and 'canRetrieveWindowContent="true"' in (root/'app/src/main/res/xml/fmp_accessibility.xml').read_text()''', "assert '<service' not in manifest and 'android.permission.' not in manifest")
+if check.exists():
+    change(check, "assert 'BIND_ACCESSIBILITY_SERVICE' in manifest", "assert 'BIND_ACCESSIBILITY_SERVICE' not in manifest")
+    change(check, "'FmpReaderService',", '')
+    change(check, '''assert '<service' in manifest and 'canRetrieveWindowContent="true"' in (root/'app/src/main/res/xml/fmp_accessibility.xml').read_text()''', "assert '<service' not in manifest and 'android.permission.' not in manifest")
 assert 'accessibility' not in manifest.read_text().lower()
 print('FMP safe V1.1 patched')
