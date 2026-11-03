@@ -1,0 +1,82 @@
+name: Build FMP Mes Transferts V1.9 - Firefox et ligne partiellement masquée
+on:
+  push:
+    paths:
+      - "android-widget/patch-browser-v1.9.py"
+      - ".github/workflows/build-fmp-widget-v1.9.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK 35
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          test -n "$SDKM"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Restore V1.8 and apply browser-only V1.9 correction
+        run: |
+          base64 -d android-widget/source-v1.6.b64.txt > /tmp/fmp-v1.6.tar.xz
+          echo "9da8ad5e05e8388b4ea68c851c18e047e656f327ba3df3e84c092ae64a9a6101  /tmp/fmp-v1.6.tar.xz" | sha256sum -c -
+          mkdir -p build-fmp-widget
+          tar -xJf /tmp/fmp-v1.6.tar.xz -C build-fmp-widget
+          cd build-fmp-widget
+          git apply --check ../android-widget/countdown-v1.7.patch
+          git apply ../android-widget/countdown-v1.7.patch
+          python3 -c 'from pathlib import Path; p=Path("app/src/main/java/com/fmp/widget/TransferStore.java"); s=p.read_text(); a="this.section=section;this.name=name;this.offer=offer;this.deadline=deadline;\n            this(section"; assert a in s; p.write_text(s.replace(a,"this(section",1))'
+          base64 -d ../android-widget/browser-v1.8.patch.b64 > /tmp/fmp-browser-v1.8.patch
+          git apply --check --exclude=build-fmp-widget/README_FR.md /tmp/fmp-browser-v1.8.patch
+          git apply --exclude=build-fmp-widget/README_FR.md /tmp/fmp-browser-v1.8.patch
+          cd ..
+          python3 android-widget/patch-browser-v1.9.py
+      - name: Test browser partial rows, native FMP unchanged, countdown
+        working-directory: build-fmp-widget
+        run: |
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
+          bash tests/run_countdown_tests.sh
+      - name: Compile Android APK
+        working-directory: build-fmp-widget
+        run: gradle --no-daemon assembleDebug
+      - name: Verify APK and permissions
+        run: |
+          APK="build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK" | tail -n 1
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          AAPT=$(find "$SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | tee /tmp/fmp-badging.txt
+          grep -q "versionName='1.9.0'" /tmp/fmp-badging.txt
+          "$AAPT" dump permissions "$APK" | tee /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.INTERNET' /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.BIND_ACCESSIBILITY_SERVICE' /tmp/fmp-permissions.txt
+          grep -q 'FOREGROUND_SERVICE_MEDIA_PROJECTION' /tmp/fmp-permissions.txt
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FMP-Mes-Transferts-V1-9-Navigateur-APK
+          path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Publish direct-download GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="fmp-widget-v1.9.0"
+          APK="FMP_Mes_Transferts_V1_9_Firefox_Favoris.apk"
+          cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FMP Mes Transferts V1.9 - Firefox et favoris partiellement masques" --notes "V1.9: corrige la detection des etiquettes RISQUE / PETIT GAIN en Firefox et preserve un joueur visible meme si son montant ou son delai est masque par Squad Advisor. Le montant ou le temps non lus restent inconnus, ou conservent une ancienne valeur si elle existe dans le cache. Le parseur FMP natif et les comptes a rebours ne changent pas. Aucun achat automatique, aucune permission supplementaire. APK debug." --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" "$APK" --clobber
