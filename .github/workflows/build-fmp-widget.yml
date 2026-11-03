@@ -1,4 +1,4 @@
-name: Build and publish FMP Android widget APK
+name: Build safe FMP Android widget APK
 on:
   push:
     paths:
@@ -26,10 +26,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Unpack Android source
+      - name: Unpack source and remove sensitive permissions
         run: |
           mkdir -p build-fmp-widget
           tar -xJf android-widget/source.tar.xz -C build-fmp-widget
+          python3 android-widget/patch-safe-v1.1.py
+          cd build-fmp-widget
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
       - name: Build debug APK
         working-directory: build-fmp-widget
         run: gradle --no-daemon assembleDebug
@@ -37,20 +41,22 @@ jobs:
         run: |
           test -s build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
           unzip -t build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk | tail -n 1
+          ! grep -R -q "BIND_ACCESSIBILITY_SERVICE" build-fmp-widget/app/src/main/
+          ! grep -R -q "android.permission.INTERNET" build-fmp-widget/app/src/main/
       - name: Publish installable debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: FMP-Mes-Transferts-debug-APK
+          name: FMP-Mes-Transferts-V1-1-safe-debug-APK
           path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-      - name: Publish direct-download GitHub release
+      - name: Publish GitHub release (safe manual tracking build)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="fmp-widget-v1.0.0"
-          APK="FMP_Mes_Transferts_V1_Android.apk"
+          TAG="fmp-widget-v1.1.0"
+          APK="FMP_Mes_Transferts_V1_1_Sans_Accessibilite.apk"
           cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "FMP Mes Transferts Android V1.0" --notes "Version expérimentale du widget Android de transferts FMP. APK signé en mode développement. Les enchères réelles ne sont pas encore connectées." --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "FMP Mes Transferts V1.1 - sans acces sensible" --notes "Widget Android de suivi MANUEL des favoris et offres, sans service d'accessibilite, ni permission Internet. Ne synchronise pas les donnees de FMP et ne permet pas d'encherir directement. APK de developpement, peut susciter des alertes Play Protect de source inconnue." --target "$GITHUB_SHA"
           fi
           gh release upload "$TAG" "$APK" --clobber
