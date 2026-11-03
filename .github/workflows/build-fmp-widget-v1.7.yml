@@ -35,6 +35,8 @@ jobs:
           cd build-fmp-widget
           git apply --check ../android-widget/countdown-v1.7.patch
           git apply ../android-widget/countdown-v1.7.patch
+          # The 7-argument Entry constructor must delegate as its first statement.
+          python3 -c 'from pathlib import Path; p=Path("app/src/main/java/com/fmp/widget/TransferStore.java"); s=p.read_text(); a="this.section=section;this.name=name;this.offer=offer;this.deadline=deadline;\n            this(section"; assert a in s; p.write_text(s.replace(a,"this(section",1))'
       - name: Run project and deadline tests
         working-directory: build-fmp-widget
         run: |
