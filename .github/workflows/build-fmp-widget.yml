@@ -1,4 +1,4 @@
-name: Build safe FMP Android widget APK
+name: Build FMP Android Samsung widget V1.2
 on:
   push:
     paths:
@@ -31,6 +31,8 @@ jobs:
           mkdir -p build-fmp-widget
           tar -xJf android-widget/source.tar.xz -C build-fmp-widget
           python3 android-widget/patch-safe-v1.1.py
+          python3 -m pip install --disable-pip-version-check pillow
+          python3 android-widget/patch-widget-v1.2.py
           cd build-fmp-widget
           if [ -f tests/check_project.py ]; then python3 tests/check_project.py; fi
           if [ -f tests/run_parser_tests.sh ]; then bash tests/run_parser_tests.sh; fi
@@ -46,17 +48,17 @@ jobs:
       - name: Publish installable debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: FMP-Mes-Transferts-V1-1-safe-debug-APK
+          name: FMP-Mes-Transferts-V1-2-Samsung-APK
           path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Publish GitHub release (safe manual tracking build)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="fmp-widget-v1.1.0"
-          APK="FMP_Mes_Transferts_V1_1_Sans_Accessibilite.apk"
+          TAG="fmp-widget-v1.2.0"
+          APK="FMP_Mes_Transferts_V1_2_Samsung.apk"
           cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "FMP Mes Transferts V1.1 - sans acces sensible" --notes "Widget Android de suivi MANUEL des favoris et offres, sans service d'accessibilite, ni permission Internet. Ne synchronise pas les donnees de FMP et ne permet pas d'encherir directement. APK de developpement, peut susciter des alertes Play Protect de source inconnue." --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "FMP Mes Transferts V1.2 - widget Samsung" --notes "Widget 4x2 Android avec apercu corrige, confirmation de placement, indications en cas de refus du lanceur Samsung. Sans lecture automatique de FMP ni encheres reelles. Ne demande pas de permissions sensibles. La signature debug peut differer de V1.1: une desinstallation pourrait etre necessaire (perte des donnees locales)." --target "$GITHUB_SHA"
           fi
           gh release upload "$TAG" "$APK" --clobber
