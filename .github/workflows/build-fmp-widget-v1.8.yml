@@ -37,8 +37,8 @@ jobs:
           git apply ../android-widget/countdown-v1.7.patch
           python3 -c 'from pathlib import Path; p=Path("app/src/main/java/com/fmp/widget/TransferStore.java"); s=p.read_text(); a="this.section=section;this.name=name;this.offer=offer;this.deadline=deadline;\n            this(section"; assert a in s; p.write_text(s.replace(a,"this(section",1))'
           base64 -d ../android-widget/browser-v1.8.patch.b64 > /tmp/fmp-browser-v1.8.patch
-          git apply --check /tmp/fmp-browser-v1.8.patch
-          git apply /tmp/fmp-browser-v1.8.patch
+          git apply --check --exclude=README_FR.md /tmp/fmp-browser-v1.8.patch
+          git apply --exclude=README_FR.md /tmp/fmp-browser-v1.8.patch
       - name: Test native FMP unchanged, Firefox overlay, prices, timers
         working-directory: build-fmp-widget
         run: |
