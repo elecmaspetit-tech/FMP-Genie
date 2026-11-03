@@ -1,0 +1,387 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -8,8 +8,8 @@
+         applicationId 'com.fmp.widget'
+         minSdk 26
+         targetSdk 35
+-        versionCode 7
+-        versionName '1.6.0'
++        versionCode 8
++        versionName '1.7.0'
+     }
+     compileOptions {
+         sourceCompatibility JavaVersion.VERSION_17
+--- a/app/src/main/java/com/fmp/widget/CountdownTime.java
++++ b/app/src/main/java/com/fmp/widget/CountdownTime.java
+@@ -0,0 +1,65 @@
++package com.fmp.widget;
++
++import java.util.Locale;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/** Pure time calculation. OCR durations are relative observations, not fixed strings. */
++public final class CountdownTime {
++    private static final Pattern PART = Pattern.compile("(\\d{1,3})(min|[jdhms])");
++    private static final long SECOND=1000L, MINUTE=60*SECOND, HOUR=60*MINUTE, DAY=24*HOUR;
++    private CountdownTime() {}
++
++    /** Returns -1 for an unrecognised/non-time status, otherwise milliseconds remaining. */
++    public static long remainingFromText(String raw) {
++        if (raw==null) return -1;
++        String input=raw.toLowerCase(Locale.ROOT).replaceAll("[\\s\\u00a0]+", "")
++            .replace("fin:", "").replace("fin", "");
++        if (input.isEmpty() || input.equals("n/a") || input.equals("vendu") || input.equals("sold")
++            || input.equals("expire") || input.equals("terminé") || input.equals("termine")) return -1;
++        Matcher m=PART.matcher(input);int index=0;long total=0;boolean matched=false;
++        while(m.find()) {
++            if(m.start()!=index) return -1;
++            index=m.end();matched=true;
++            long v=Long.parseLong(m.group(1));
++            switch(m.group(2)) {
++                case "j":case "d": total+=v*DAY; break;
++                case "h": total+=v*HOUR; break;
++                case "m":case "min": total+=v*MINUTE; break;
++                case "s": total+=v*SECOND; break;
++                default: return -1;
++            }
++        }
++        return matched && index==input.length() ? total : -1;
++    }
++    public static long deadlineAt(String raw,long sampledAt) {
++        long remaining=remainingFromText(raw);
++        return remaining<0 || sampledAt<=0 ? 0 : sampledAt+remaining;
++    }
++    /** Keep a previously estimated end instant when a new OCR reading differs only by rounding. */
++    public static long reconcile(long oldAt,String newRaw,long now) {
++        long remaining=remainingFromText(newRaw);
++        if(remaining<0) return 0;
++        long candidate=now+remaining;
++        if(oldAt<=0) return candidate;
++        String text=newRaw.toLowerCase(Locale.ROOT);
++        long tolerance=text.matches(".*\\d(?:m|min|s).*" ) ? 90*SECOND :
++            text.matches(".*\\d[h].*") ? 70*MINUTE : DAY;
++        return Math.abs(candidate-oldAt)<=tolerance ? oldAt : candidate;
++    }
++    public static String remainingLabel(String original,long deadline,long now) {
++        if(deadline<=0) {
++            if(original==null || original.trim().isEmpty()) return "Fin non relevée";
++            return "Fin : " + original;
++        }
++        long ms=deadline-now;
++        if(ms<=0) return "Échéance estimée atteinte · vérifier FMP";
++        long seconds=(ms+999)/SECOND;
++        long days=seconds/86400;seconds%=86400;
++        long hours=seconds/3600;seconds%=3600;
++        long minutes=seconds/60;seconds%=60;
++        if(days>0)return String.format(Locale.FRANCE,"Fin dans %dj %02dh %02dm %02ds",days,hours,minutes,seconds);
++        if(hours>0)return String.format(Locale.FRANCE,"Fin dans %02dh %02dm %02ds",hours,minutes,seconds);
++        return String.format(Locale.FRANCE,"Fin dans %02dm %02ds",minutes,seconds);
++    }
++}
+--- a/app/src/main/java/com/fmp/widget/FavoritesWidget.java
++++ b/app/src/main/java/com/fmp/widget/FavoritesWidget.java
+@@ -1,6 +1,9 @@
+ package com.fmp.widget;
+ 
+ import android.app.PendingIntent;
++import android.app.AlarmManager;
++import android.os.SystemClock;
++import android.view.View;
+ import android.appwidget.AppWidgetManager;
+ import android.appwidget.AppWidgetProvider;
+ import android.content.ComponentName;
+@@ -19,6 +22,8 @@
+     private static final String PREV="com.fmp.widget.PAGE_PREV";
+     private static final String TAB="com.fmp.widget.TAB";
+     private static final String STATE="widget_tabs";
++    private static final String EXPIRE="com.fmp.widget.EXPIRY_REFRESH";
++    private static final String EXPIRY_PREF="widget_expiry";
+ 
+     public static void updateAll(Context context) {
+         AppWidgetManager m=AppWidgetManager.getInstance(context);
+@@ -37,6 +42,12 @@
+     }
+     @Override public void onReceive(Context context,Intent intent) {
+         String action=intent.getAction();
++        if(EXPIRE.equals(action)) {
++            context.getSharedPreferences(EXPIRY_PREF,Context.MODE_PRIVATE).edit().remove("next").apply();
++            updateAll(context);
++            scheduleNextExpiry(context);
++            return;
++        }
+         if (NEXT.equals(action)||PREV.equals(action)||TAB.equals(action)) {
+             int id=intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID,-1);
+             if(id>=0) {
+@@ -71,6 +82,47 @@
+         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TOP);
+         return PendingIntent.getActivity(ctx,widgetId*100+index,i,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+     }
++    private static void clearCountdown(RemoteViews rv,int plain,int clock) {
++        rv.setViewVisibility(plain,View.VISIBLE);
++        rv.setTextViewText(plain,"");
++        rv.setChronometer(clock,SystemClock.elapsedRealtime(),null,false);
++        rv.setViewVisibility(clock,View.GONE);
++    }
++    private static void setCountdown(RemoteViews rv,int plain,int clock,TransferStore.Entry entry) {
++        long remaining=entry.deadlineAt-System.currentTimeMillis();
++        if(entry.deadlineAt>0&&remaining>0) {
++            rv.setViewVisibility(plain,View.GONE);
++            rv.setViewVisibility(clock,View.VISIBLE);
++            rv.setChronometerCountDown(clock,true);
++            rv.setChronometer(clock,SystemClock.elapsedRealtime()+remaining,"Fin dans %s",true);
++        }else {
++            rv.setChronometer(clock,SystemClock.elapsedRealtime(),null,false);
++            rv.setViewVisibility(clock,View.GONE);
++            rv.setViewVisibility(plain,View.VISIBLE);
++            rv.setTextViewText(plain,CountdownTime.remainingLabel(entry.deadline,entry.deadlineAt,System.currentTimeMillis()));
++        }
++    }
++    /** One inexact, non-wakeup alarm refreshes the widget after the nearest estimated expiry. */
++    public static void scheduleNextExpiry(Context ctx) {
++        long now=System.currentTimeMillis();
++        long next=Long.MAX_VALUE;
++        for(TransferStore.Entry e:TransferStore.all(ctx))
++            if(e.deadlineAt>now && e.deadlineAt<next) next=e.deadlineAt;
++        long previous=ctx.getSharedPreferences(EXPIRY_PREF,Context.MODE_PRIVATE).getLong("next",0);
++        if(next==Long.MAX_VALUE) next=0;
++        if(next==previous)return;
++        AlarmManager manager=(AlarmManager)ctx.getSystemService(Context.ALARM_SERVICE);
++        if(manager==null)return;
++        Intent intent=new Intent(ctx,FavoritesWidget.class).setAction(EXPIRE);
++        PendingIntent alarm=PendingIntent.getBroadcast(ctx,10420,intent,
++            PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
++        manager.cancel(alarm);
++        if(next>0){
++            manager.set(AlarmManager.ELAPSED_REALTIME,
++                SystemClock.elapsedRealtime()+Math.max(1000,next-now),alarm);
++        }
++        ctx.getSharedPreferences(EXPIRY_PREF,Context.MODE_PRIVATE).edit().putLong("next",next).apply();
++    }
+     private static void render(Context ctx,AppWidgetManager mgr,int widgetId) {
+         int section=ctx.getSharedPreferences(STATE,Context.MODE_PRIVATE).getInt("tab_"+widgetId,0);
+         RemoteViews rv=new RemoteViews(ctx.getPackageName(),R.layout.fmp_widget);
+@@ -91,23 +143,23 @@
+         if(start<rows.size()) {
+             rv.setTextViewText(R.id.name_one,rows.get(start).name);
+             rv.setTextViewText(R.id.offer_one,rows.get(start).offer);
+-            rv.setTextViewText(R.id.deadline_one,rows.get(start).deadline.isEmpty()?"":"Fin à la lecture : "+rows.get(start).deadline);
++            setCountdown(rv,R.id.deadline_one,R.id.deadline_one_timer,rows.get(start));
+             rv.setOnClickPendingIntent(R.id.item_one,activityClick(ctx,widgetId,section,rows.get(start).name,3));
+         }else {
+             rv.setTextViewText(R.id.name_one,"Aucun joueur — gérer");
+             rv.setTextViewText(R.id.offer_one,"");
+-            rv.setTextViewText(R.id.deadline_one,"");
++            clearCountdown(rv,R.id.deadline_one,R.id.deadline_one_timer);
+             rv.setOnClickPendingIntent(R.id.item_one,activityClick(ctx,widgetId,section,null,3));
+         }
+         if(start+1<rows.size()) {
+             rv.setTextViewText(R.id.name_two,rows.get(start+1).name);
+             rv.setTextViewText(R.id.offer_two,rows.get(start+1).offer);
+-            rv.setTextViewText(R.id.deadline_two,rows.get(start+1).deadline.isEmpty()?"":"Fin à la lecture : "+rows.get(start+1).deadline);
++            setCountdown(rv,R.id.deadline_two,R.id.deadline_two_timer,rows.get(start+1));
+             rv.setOnClickPendingIntent(R.id.item_two,activityClick(ctx,widgetId,section,rows.get(start+1).name,4));
+         }else {
+             rv.setTextViewText(R.id.name_two,rows.size()==1?"Voir les autres dans l'app":"");
+             rv.setTextViewText(R.id.offer_two,"");
+-            rv.setTextViewText(R.id.deadline_two,"");
++            clearCountdown(rv,R.id.deadline_two,R.id.deadline_two_timer);
+             rv.setOnClickPendingIntent(R.id.item_two,activityClick(ctx,widgetId,section,null,4));
+         }
+         Intent openGame=new Intent(ctx,MainActivity.class).putExtra(MainActivity.EXTRA_OPEN_FMP,true)
+--- a/app/src/main/java/com/fmp/widget/MainActivity.java
++++ b/app/src/main/java/com/fmp/widget/MainActivity.java
+@@ -29,6 +29,7 @@
+ import android.widget.Toast;
+ import java.text.DateFormat;
+ import java.util.Date;
++import java.util.ArrayList;
+ import java.util.List;
+ 
+ /** Native controller for an independent FMP home-screen widget. */
+@@ -42,6 +43,21 @@
+     private static final int REQUEST_CAPTURE = 9032;
+     private int section=0;
+     private LinearLayout root, entries;
++    private final Handler clockHandler=new Handler(Looper.getMainLooper());
++    private final List<TimeLine> timeLines=new ArrayList<>();
++    private static final class TimeLine {
++        final TextView view;
++        final TransferStore.Entry entry;
++        TimeLine(TextView view,TransferStore.Entry entry){this.view=view;this.entry=entry;}
++    }
++    private final Runnable tick=new Runnable(){
++        @Override public void run(){
++            long now=System.currentTimeMillis();
++            for(TimeLine line:timeLines) line.view.setText(
++                CountdownTime.remainingLabel(line.entry.deadline,line.entry.deadlineAt,now));
++            clockHandler.postDelayed(this,1000L);
++        }
++    };
+ 
+     @Override protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+@@ -58,7 +74,16 @@
+             });
+         }
+     }
+-    @Override protected void onResume(){super.onResume(); if(root!=null)drawScreen();}
++    @Override protected void onResume(){
++        super.onResume();
++        if(root!=null)drawScreen();
++        clockHandler.removeCallbacks(tick);
++        clockHandler.post(tick);
++    }
++    @Override protected void onPause(){
++        clockHandler.removeCallbacks(tick);
++        super.onPause();
++    }
+     @Override protected void onNewIntent(Intent intent) {
+         super.onNewIntent(intent);setIntent(intent);
+         if(intent.getBooleanExtra(EXTRA_OPEN_FMP,false)){openFmp();return;}
+@@ -80,6 +105,7 @@
+         b.setOnClickListener(v->r.run());return b;
+     }
+     private void drawScreen() {
++        timeLines.clear();
+         root=vertical();root.setBackgroundColor(DARK);
+         setContentView(root);
+         ScrollView scroll=new ScrollView(this);
+@@ -147,8 +173,12 @@
+         LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.bottomMargin=dp(9);entries.addView(card,cp);
+         TextView name=text(e.name,17,LIGHT,true);card.addView(name);
+         String offer=e.offer.isEmpty()?"Offre non relevée":"Offre : "+e.offer;
+-        String deadline=e.deadline.isEmpty()?"":"  •  Fin : "+e.deadline;
+-        TextView details=text(offer+deadline,13,GREEN,false);details.setPadding(0,dp(5),0,dp(5));card.addView(details);
++        TextView details=text(offer,13,GREEN,false);
++        details.setPadding(0,dp(5),0,0);card.addView(details);
++        TextView countdown=text(CountdownTime.remainingLabel(e.deadline,e.deadlineAt,System.currentTimeMillis()),
++            13,GREEN,true);
++        countdown.setPadding(0,0,0,dp(5));card.addView(countdown);
++        timeLines.add(new TimeLine(countdown,e));
+         String stamp=e.updated==0?"Ajout manuel":DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(new Date(e.updated));
+         card.addView(text("Source : "+e.source+" · "+stamp,11,0xFFBFD3B6,false));
+         if(!e.draft.isEmpty())card.addView(text("Brouillon d'enchère : "+e.draft,12,0xFFFBE4A5,true));
+@@ -160,7 +190,7 @@
+     private void showDetail(TransferStore.Entry e) {
+         String message="Catégorie : "+VisibleTransfersParser.SECTIONS[e.section]+"\n"
+             +"Offre affichée : "+(e.offer.isEmpty()?"non connue":e.offer)+"\n"
+-            +"Fin : "+(e.deadline.isEmpty()?"non connue":e.deadline)+"\n"
++            +CountdownTime.remainingLabel(e.deadline,e.deadlineAt,System.currentTimeMillis())+"\n"
+             +"Brouillon : "+(e.draft.isEmpty()?"aucun":e.draft)+"\n\n"
+             +"Le widget ne réalise pas d'enchère. Toute opération réelle doit être confirmée dans FMP.";
+         new AlertDialog.Builder(this).setTitle(e.name).setMessage(message)
+--- a/app/src/main/java/com/fmp/widget/TransferStore.java
++++ b/app/src/main/java/com/fmp/widget/TransferStore.java
+@@ -15,10 +15,17 @@
+         public int section;
+         public String name, offer, deadline, draft;
+         public long updated;
++        /** Estimated auction end timestamp (Unix epoch milliseconds); 0 if unknown/sold. */
++        public long deadlineAt;
+         public String source;
+         public Entry(int section,String name,String offer,String deadline,String draft,long updated,String source) {
+             this.section=section;this.name=name;this.offer=offer;this.deadline=deadline;
+-            this.draft=draft;this.updated=updated;this.source=source;
++            this(section,name,offer,deadline,draft,updated,source,
++                CountdownTime.deadlineAt(deadline,updated));
++        }
++        public Entry(int section,String name,String offer,String deadline,String draft,long updated,String source,long deadlineAt) {
++            this.section=section;this.name=name;this.offer=offer;this.deadline=deadline;
++            this.draft=draft;this.updated=updated;this.source=source;this.deadlineAt=deadlineAt;
+         }
+     }
+     private static SharedPreferences prefs(Context ctx) {
+@@ -34,7 +41,9 @@
+                 String name=o.optString("name","").trim();
+                 if(section<0 || section>3 || name.isEmpty())continue;
+                 rows.add(new Entry(section,name,o.optString("offer",""),o.optString("deadline",""),
+-                    o.optString("draft",""),o.optLong("updated",0),o.optString("source","manual")));
++                    o.optString("draft",""),o.optLong("updated",0),o.optString("source","manual"),
++                    o.has("deadlineAt")?o.optLong("deadlineAt",0):
++                        CountdownTime.deadlineAt(o.optString("deadline",""),o.optLong("updated",0))));
+             }
+         }catch(Exception ignored) { /* leave corrupt or partial data hidden; no crash */ }
+         rows.sort(Comparator.comparingInt((Entry e)->e.section).thenComparing(e->e.name,String.CASE_INSENSITIVE_ORDER));
+@@ -48,11 +57,13 @@
+                 o.put("section",e.section);o.put("name",e.name);o.put("offer",e.offer);
+                 o.put("deadline",e.deadline);o.put("draft",e.draft);
+                 o.put("updated",e.updated);o.put("source",e.source);
++                o.put("deadlineAt",e.deadlineAt);
+                 a.put(o);
+             }catch(Exception ignored) { }
+         }
+         prefs(ctx).edit().putString("rows",a.toString()).apply();
+         FavoritesWidget.updateAll(ctx);
++        FavoritesWidget.scheduleNextExpiry(ctx);
+     }
+     public static synchronized void upsert(Context ctx,Entry e) {
+         List<Entry> rows=all(ctx);
+@@ -81,7 +92,9 @@
+                 if(old.section==r.section && old.name.equalsIgnoreCase(r.name)) {
+                     String offer=r.offer.isEmpty()?old.offer:r.offer;
+                     String deadline=r.deadline.isEmpty()?old.deadline:r.deadline;
+-                    rows.set(i,new Entry(r.section,r.name,offer,deadline,old.draft,now,"FMP écran"));
++                    long at=r.deadline.isEmpty()?old.deadlineAt:
++                        CountdownTime.reconcile(old.deadlineAt,r.deadline,now);
++                    rows.set(i,new Entry(r.section,r.name,offer,deadline,old.draft,now,"FMP écran",at));
+                     updated=true;break;
+                 }
+             }
+--- a/app/src/main/res/layout/fmp_widget.xml
++++ b/app/src/main/res/layout/fmp_widget.xml
+@@ -15,6 +15,7 @@
+         <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="end">
+             <TextView android:id="@+id/offer_one" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" android:textColor="#D1EF8C" android:textSize="13sp" />
+             <TextView android:id="@+id/deadline_one" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" android:textColor="#B7D8A3" android:textSize="10sp" />
++            <Chronometer android:id="@+id/deadline_one_timer" android:layout_width="wrap_content" android:layout_height="wrap_content" android:visibility="gone" android:textColor="#B7D8A3" android:textSize="10sp" android:countDown="true" />
+         </LinearLayout>
+     </LinearLayout>
+     <LinearLayout android:id="@+id/item_two" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingTop="6dp">
+@@ -22,6 +23,7 @@
+         <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="end">
+             <TextView android:id="@+id/offer_two" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" android:textColor="#D1EF8C" android:textSize="13sp" />
+             <TextView android:id="@+id/deadline_two" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" android:textColor="#B7D8A3" android:textSize="10sp" />
++            <Chronometer android:id="@+id/deadline_two_timer" android:layout_width="wrap_content" android:layout_height="wrap_content" android:visibility="gone" android:textColor="#B7D8A3" android:textSize="10sp" android:countDown="true" />
+         </LinearLayout>
+     </LinearLayout>
+     <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:gravity="bottom|center_vertical" android:orientation="horizontal" android:paddingTop="5dp">
+--- a/tests/CountdownTest.java
++++ b/tests/CountdownTest.java
+@@ -0,0 +1,26 @@
++import com.fmp.widget.CountdownTime;
++
++public final class CountdownTest {
++    private static void eq(Object expected,Object found){if(!expected.equals(found))throw new AssertionError(expected+" != "+found);}
++    private static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
++    public static void main(String[] args){
++        eq(9*3600_000L+50*60_000L,CountdownTime.remainingFromText("9h 50m"));
++        eq(24*3600_000L+8*3600_000L,CountdownTime.remainingFromText("1j 08h"));
++        eq(2*24*3600_000L+4*3600_000L,CountdownTime.remainingFromText("2j 04h"));
++        eq(-1L,CountdownTime.remainingFromText("vendu"));
++        eq(-1L,CountdownTime.remainingFromText("N/A"));
++        eq(-1L,CountdownTime.remainingFromText("22foo"));
++        eq(-1L,CountdownTime.remainingFromText(""));
++        long start=1_790_000_000_000L;
++        long end=CountdownTime.deadlineAt("9h 50m",start);
++        eq("Fin dans 09h 50m 00s",CountdownTime.remainingLabel("9h 50m",end,start));
++        eq("Fin dans 09h 49m 59s",CountdownTime.remainingLabel("9h 50m",end,start+1000));
++        eq("Échéance estimée atteinte · vérifier FMP",CountdownTime.remainingLabel("9h 50m",end,end));
++        eq(end,CountdownTime.reconcile(end,"9h 49m",start+60_000L));
++        eq(end,CountdownTime.reconcile(end,"9h 50m",start+30_000L));
++        check(CountdownTime.reconcile(end,"10h 50m",start+30_000L)>end,"must reanchor on material auction extension");
++        eq(0L,CountdownTime.reconcile(end,"vendu",start+30_000L));
++        eq("Fin : vendu",CountdownTime.remainingLabel("vendu",0,start));
++        System.out.println("OK: countdown formats, live seconds, OCR reconciliation, sold, expiry");
++    }
++}
+--- a/tests/run_countdown_tests.sh
++++ b/tests/run_countdown_tests.sh
+@@ -0,0 +1,7 @@
++#!/usr/bin/env bash
++set -euo pipefail
++cd "$(dirname "$0")/.."
++mkdir -p /tmp/fmp_countdown_test_classes
++javac -encoding UTF-8 -d /tmp/fmp_countdown_test_classes \
++  app/src/main/java/com/fmp/widget/CountdownTime.java tests/CountdownTest.java
++java -cp /tmp/fmp_countdown_test_classes CountdownTest
