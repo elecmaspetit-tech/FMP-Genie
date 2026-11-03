@@ -1,0 +1,73 @@
+name: Build FMP Mes Transferts V1.6 OCR stable
+on:
+  push:
+    paths:
+      - "android-widget/source-v1.6.b64.txt"
+      - ".github/workflows/build-fmp-widget-v1.6.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK 35
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          test -n "$SDKM"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Extract verified standalone source
+        run: |
+          base64 -d android-widget/source-v1.6.b64.txt > /tmp/fmp-v1.6.tar.xz
+          echo "9da8ad5e05e8388b4ea68c851c18e047e656f327ba3df3e84c092ae64a9a6101  /tmp/fmp-v1.6.tar.xz" | sha256sum -c -
+          mkdir -p build-fmp-widget
+          tar -xJf /tmp/fmp-v1.6.tar.xz -C build-fmp-widget
+      - name: Run XML validation and real screenshot OCR regressions
+        working-directory: build-fmp-widget
+        run: |
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
+      - name: Build installable debug APK
+        working-directory: build-fmp-widget
+        run: gradle --no-daemon assembleDebug
+      - name: Check output and sensitive permissions
+        run: |
+          APK="build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK" | tail -n 1
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          AAPT=$(find "$SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "versionName='1.6.0'" /tmp/badging.txt
+          "$AAPT" dump permissions "$APK" | tee /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.INTERNET' /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.BIND_ACCESSIBILITY_SERVICE' /tmp/fmp-permissions.txt
+          grep -q 'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION' /tmp/fmp-permissions.txt
+          sha256sum "$APK"
+      - name: Save build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FMP-Mes-Transferts-V1-6-APK
+          path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Publish V1.6 APK as direct download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="fmp-widget-v1.6.0"
+          APK="FMP_Mes_Transferts_V1_6_OCR_Ameliore.apk"
+          cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FMP Mes Transferts V1.6 - OCR colonnes corrige" --notes "OCR local à la demande. Corrige faux joueurs issus du pied de page, sépare les lignes de favoris, associe montants et durées aux bonnes lignes, convertit 1i en 1j dans la colonne Fin. Testé sur diagnostic OCR réel du 3 novembre 2026. Widget affiche le délai à la lecture, pas un timer en temps réel. Aucune API FMP, aucune permission Internet ou accessibilité, aucune enchère automatique. APK signé en mode debug; une désinstallation préalable peut être nécessaire." --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" "$APK" --clobber
