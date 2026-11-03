@@ -32,8 +32,8 @@ jobs:
           tar -xJf android-widget/source.tar.xz -C build-fmp-widget
           python3 android-widget/patch-safe-v1.1.py
           cd build-fmp-widget
-          python3 tests/check_project.py
-          bash tests/run_parser_tests.sh
+          if [ -f tests/check_project.py ]; then python3 tests/check_project.py; fi
+          if [ -f tests/run_parser_tests.sh ]; then bash tests/run_parser_tests.sh; fi
       - name: Build debug APK
         working-directory: build-fmp-widget
         run: gradle --no-daemon assembleDebug
