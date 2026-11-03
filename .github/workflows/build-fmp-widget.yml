@@ -1,4 +1,4 @@
-name: Build FMP Android widget APK
+name: Build and publish FMP Android widget APK
 on:
   push:
     paths:
@@ -6,7 +6,7 @@ on:
       - ".github/workflows/build-fmp-widget.yml"
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -33,9 +33,24 @@ jobs:
       - name: Build debug APK
         working-directory: build-fmp-widget
         run: gradle --no-daemon assembleDebug
+      - name: Verify APK
+        run: |
+          test -s build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
+          unzip -t build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk | tail -n 1
       - name: Publish installable debug APK
         uses: actions/upload-artifact@v4
         with:
           name: FMP-Mes-Transferts-debug-APK
           path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Publish direct-download GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="fmp-widget-v1.0.0"
+          APK="FMP_Mes_Transferts_V1_Android.apk"
+          cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FMP Mes Transferts Android V1.0" --notes "Version expérimentale du widget Android de transferts FMP. APK signé en mode développement. Les enchères réelles ne sont pas encore connectées." --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" "$APK" --clobber
