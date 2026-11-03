@@ -1,4 +1,4 @@
-name: Build FMP Android Samsung widget V1.2
+name: Build FMP widget V1.3 live capture
 on:
   push:
     paths:
@@ -26,39 +26,41 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Unpack source and remove sensitive permissions
+      - name: Extract V1.3 live source and verify
         run: |
           mkdir -p build-fmp-widget
-          tar -xJf android-widget/source.tar.xz -C build-fmp-widget
-          python3 android-widget/patch-safe-v1.1.py
-          python3 -m pip install --disable-pip-version-check pillow
-          python3 android-widget/patch-widget-v1.2.py
+          tar -xJf android-widget/source-v1.3.tar.xz -C build-fmp-widget
           cd build-fmp-widget
-          if [ -f tests/check_project.py ]; then python3 tests/check_project.py; fi
-          if [ -f tests/run_parser_tests.sh ]; then bash tests/run_parser_tests.sh; fi
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
       - name: Build debug APK
         working-directory: build-fmp-widget
         run: gradle --no-daemon assembleDebug
-      - name: Verify APK
+      - name: Validate APK and permissions
         run: |
-          test -s build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
-          unzip -t build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk | tail -n 1
-          ! grep -R -q "BIND_ACCESSIBILITY_SERVICE" build-fmp-widget/app/src/main/
-          ! grep -R -q "android.permission.INTERNET" build-fmp-widget/app/src/main/
-      - name: Publish installable debug APK
+          APK="build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK" | tail -n 1
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          AAPT=$(find "$SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump permissions "$APK" | tee /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.INTERNET' /tmp/fmp-permissions.txt
+          ! grep -q 'android.permission.BIND_ACCESSIBILITY_SERVICE' /tmp/fmp-permissions.txt
+          grep -q 'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION' /tmp/fmp-permissions.txt
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FMP-Mes-Transferts-V1-2-Samsung-APK
+          name: FMP-Mes-Transferts-V1-3-Live-APK
           path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-      - name: Publish GitHub release (safe manual tracking build)
+      - name: Release V1.3 APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="fmp-widget-v1.2.0"
-          APK="FMP_Mes_Transferts_V1_2_Samsung.apk"
+          TAG="fmp-widget-v1.3.0"
+          APK="FMP_Mes_Transferts_V1_3_Lecture_Direct.apk"
           cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "FMP Mes Transferts V1.2 - widget Samsung" --notes "Widget 4x2 Android avec apercu corrige, confirmation de placement, indications en cas de refus du lanceur Samsung. Sans lecture automatique de FMP ni encheres reelles. Ne demande pas de permissions sensibles. La signature debug peut differer de V1.1: une desinstallation pourrait etre necessaire (perte des donnees locales)." --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "FMP Mes Transferts V1.3 - lecture ecran volontaire" --notes "Version experimentale: partage volontaire de l'application FMP via Android, reconnaissance de texte sur l'appareil via ML Kit et mise a jour du widget avec les joueurs/offres visibles. Aucune API officielle, aucune actualisation quand FMP n'est pas visible, aucune enchere envoyee. Sans accessibilite ni Internet. Android peut demander de desinstaller les versions precedentes si signatures debug differentes." --target "$GITHUB_SHA"
           fi
           gh release upload "$TAG" "$APK" --clobber
