@@ -1,0 +1,92 @@
+name: Build FMP V2.1 transfers-first UI and Firefox DOM fix
+on:
+  push:
+    paths:
+      - "android-widget/patch-v2.1-layout.py"
+      - "android-widget/patch-v2.1-firefox.py"
+      - "android-widget/patch-v2.1-migration.py"
+      - ".github/workflows/build-fmp-widget-v2.1.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK 35
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          test -n "$SDKM"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Restore checked V2.0 source
+        run: |
+          base64 -d android-widget/source-v2.0.b64.txt > /tmp/fmp-v2.0.tar.xz
+          echo "9a68e63ca35b2f18f0c86df68168d530643b78d6d0bdd065a36bd1a48f5b6048  /tmp/fmp-v2.0.tar.xz" | sha256sum -c -
+          mkdir -p build-fmp-widget
+          tar -xJf /tmp/fmp-v2.0.tar.xz -C build-fmp-widget
+      - name: Apply V2.1 home/settings and Firefox parser changes
+        run: |
+          cd build-fmp-widget
+          python3 ../android-widget/patch-v2.1-layout.py
+          python3 ../android-widget/patch-v2.1-firefox.py
+          python3 ../android-widget/patch-v2.1-migration.py
+          grep -q 'private void drawSettings' app/src/main/java/com/fmp/widget/MainActivity.java
+          grep -q 'settingsOpen' app/src/main/java/com/fmp/widget/MainActivity.java
+          grep -q "versionName '2.1.0'" app/build.gradle
+      - name: Test Java transfer parser and countdown
+        working-directory: build-fmp-widget
+        run: |
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
+          bash tests/run_countdown_tests.sh
+      - name: Test Firefox DOM userscript parsing
+        working-directory: build-fmp-widget
+        run: |
+          node --check firefox/FMP_Direct_Bridge_V2_1.user.js
+          node tests/test_userscript.js
+      - name: Compile Android APK
+        working-directory: build-fmp-widget
+        run: gradle --no-daemon assembleDebug
+      - name: Validate APK and minimal permissions
+        run: |
+          APK="build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK" | tail -n 1
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          AAPT=$(find "$SDK_ROOT/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep "versionName='2.1.0'"
+          "$AAPT" dump permissions "$APK" | tee /tmp/fmp-v2-permissions.txt
+          grep -q 'android.permission.INTERNET' /tmp/fmp-v2-permissions.txt
+          grep -q 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' /tmp/fmp-v2-permissions.txt
+          grep -q 'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION' /tmp/fmp-v2-permissions.txt
+          ! grep -q 'android.permission.BIND_ACCESSIBILITY_SERVICE' /tmp/fmp-v2-permissions.txt
+          sha256sum "$APK"
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FMP-Mes-Transferts-V2-1-APK
+          path: build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Publish APK and Firefox userscript
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="fmp-widget-v2.1.0"
+          APK="FMP_Mes_Transferts_V2_1_Accueil_Transferts.apk"
+          SCRIPT="FMP_Direct_Bridge_V2_1.user.js"
+          cp build-fmp-widget/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          cp build-fmp-widget/firefox/FMP_Direct_Bridge_V2_0.user.js "$SCRIPT"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FMP Mes Transferts V2.1 - Accueil transferts et parametres" --notes "V2.1 deplace les commandes techniques vers une page Parametres. La page principale affiche directement les quatre categories de transferts, les joueurs et les comptes a rebours. Le script Firefox V2.1 supprime les etiquettes FMP Squad Advisor collees aux noms, et conserve les joueurs avec un age reconnu si le montant est masque. Nettoyage selectif des anciennes fiches HTML dont le nom finit en NON. Les captures OCR de l application FMP officielle et la logique des compteurs restent inchangees. L APK et le script Firefox doivent etre installes ensemble. Les favoris reels de la page authentifiee restent a valider sur le telephone. Aucun achat automatique." --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" "$APK" "$SCRIPT" --clobber
