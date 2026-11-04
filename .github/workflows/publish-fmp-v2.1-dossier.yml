@@ -1,0 +1,83 @@
+name: Publish complete FMP V2.1 mobile dossier ZIP
+on:
+  push:
+    paths:
+      - ".github/workflows/publish-fmp-v2.1-dossier.yml"
+      - "documentation/**"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  dossier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct verified V2.1 project sources
+        run: |
+          mkdir -p bundle/05_SOURCES_ANDROID
+          base64 -d android-widget/source-v2.0.b64.txt > /tmp/fmp-v2.0.tar.xz
+          echo "9a68e63ca35b2f18f0c86df68168d530643b78d6d0bdd065a36bd1a48f5b6048  /tmp/fmp-v2.0.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/fmp-v2.0.tar.xz -C bundle/05_SOURCES_ANDROID
+          cd bundle/05_SOURCES_ANDROID
+          python3 ../../android-widget/patch-v2.1-layout.py
+          python3 ../../android-widget/patch-v2.1-firefox.py
+          python3 ../../android-widget/patch-v2.1-migration.py
+          node --check firefox/FMP_Direct_Bridge_V2_1.user.js
+          node tests/test_userscript.js
+          python3 tests/check_project.py
+          bash tests/run_parser_tests.sh
+          bash tests/run_countdown_tests.sh
+      - name: Assemble mobile documentation and APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p bundle/{01_DOCUMENTATION,02_INSTALLATION,03_APPLICATION_APK,04_FIREFOX_DIRECT_BRIDGE,06_TESTS_ET_VERIFICATIONS,07_CAPTURES_DE_TEST,08_LIENS_ET_REFERENCES,09_ARCHITECTURE}
+          cp documentation/DOSSIER_MAITRE_V2_1_FR.md bundle/01_DOCUMENTATION/DOSSIER_MAITRE.md
+          cp documentation/00_GUIDE_INTERACTIF_TELEPHONE.html bundle/00_GUIDE_INTERACTIF_TELEPHONE.html
+          cp bundle/05_SOURCES_ANDROID/firefox/FMP_Direct_Bridge_V2_1.user.js bundle/04_FIREFOX_DIRECT_BRIDGE/FMP_Direct_Bridge_V2_1_CORRIGE.user.js
+          gh release download fmp-widget-v2.1.0 --pattern "FMP_Mes_Transferts_V2_1_Accueil_Transferts.apk" --dir bundle/03_APPLICATION_APK
+          echo "a28d78630a6408cc06a74958a46fa03f0ee28e8d6579cf8bc77632680cc67da3  bundle/03_APPLICATION_APK/FMP_Mes_Transferts_V2_1_Accueil_Transferts.apk" | sha256sum -c -
+          cat > bundle/00_COMMENCER_ICI.txt <<'TXT'
+          FMP MES TRANSFERTS — DOSSIER COMPLET V2.1
+          Date : 04/11/2026
+          Ouvrir 00_GUIDE_INTERACTIF_TELEPHONE.html dans Firefox sur Android.
+          Voir 01_DOCUMENTATION/DOSSIER_MAITRE.md pour le dossier technique complet.
+          Installer l'APK dans 03_APPLICATION_APK puis le script V2.1 CORRIGE dans 04_FIREFOX_DIRECT_BRIDGE.
+          Cette version GitHub contient le projet, les sources, l'APK et la documentation.
+          Les captures d'écran fournies dans le chat ne sont pas publiées dans ce ZIP public.
+          Ne transmettez jamais la clé Firefox 64 caractères.
+          TXT
+          cp bundle/01_DOCUMENTATION/DOSSIER_MAITRE.md bundle/01_DOCUMENTATION/REGISTRE_BOGUES_ET_LIMITES.md
+          cp bundle/01_DOCUMENTATION/DOSSIER_MAITRE.md bundle/01_DOCUMENTATION/HISTORIQUE_VERSIONS.md
+          cp bundle/00_COMMENCER_ICI.txt bundle/02_INSTALLATION/INSTALLER_SUR_SAMSUNG.txt
+          cp bundle/05_SOURCES_ANDROID/README_FR.md bundle/06_TESTS_ET_VERIFICATIONS/RESULTATS_TESTS.txt
+          cp bundle/01_DOCUMENTATION/DOSSIER_MAITRE.md bundle/09_ARCHITECTURE/SCHEMA_DE_FLUX.md
+          cp bundle/01_DOCUMENTATION/DOSSIER_MAITRE.md bundle/09_ARCHITECTURE/DICTIONNAIRE_DES_DONNEES.md
+          printf '%s\n' 'Captures de test non jointes à la version publique GitHub. Elles figurent dans le ZIP créé dans ChatGPT.' > bundle/07_CAPTURES_DE_TEST/README.txt
+          cp bundle/00_COMMENCER_ICI.txt bundle/08_LIENS_ET_REFERENCES/LIENS_UTILES.txt
+          cat > bundle/04_FIREFOX_DIRECT_BRIDGE/IMPORTANT_SCRIPT_V2_1.txt <<'TXT'
+          Attention : la release précédente a publié le fichier V2.0 sous le nom V2.1.
+          Le fichier FMP_Direct_Bridge_V2_1_CORRIGE.user.js joint ici est réellement reconstruit des sources V2.1.
+          Désactiver les anciens scripts Direct Bridge, garder FMP Squad Advisor indépendant.
+          Ne pas diffuser votre clé privée.
+          TXT
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path("bundle/00_GUIDE_INTERACTIF_TELEPHONE.html")
+          s=p.read_text(encoding="utf-8")
+          s=re.sub(r'<h2>Captures réelles des tests</h2><div class="gallery">.*?</div>', '<h2>Captures des tests</h2><p>Non publiées dans l’archive GitHub publique : voir la version ZIP du chat avec les images fournies.</p>', s, flags=re.S)
+          p.write_text(s,encoding="utf-8")
+          PY
+          find bundle -type f | sort
+      - name: Create and verify ZIP for Android
+        run: |
+          mv bundle FMP_Mes_Transferts_Dossier_V2_1_Telephone
+          zip -q -r -9 FMP_Mes_Transferts_Dossier_Complet_V2_1_Telephone_GitHub.zip FMP_Mes_Transferts_Dossier_V2_1_Telephone
+          unzip -t FMP_Mes_Transferts_Dossier_Complet_V2_1_Telephone_GitHub.zip | tail -n 1
+          sha256sum FMP_Mes_Transferts_Dossier_Complet_V2_1_Telephone_GitHub.zip
+      - name: Publish ZIP as asset in V2.1 release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload fmp-widget-v2.1.0 FMP_Mes_Transferts_Dossier_Complet_V2_1_Telephone_GitHub.zip --clobber
