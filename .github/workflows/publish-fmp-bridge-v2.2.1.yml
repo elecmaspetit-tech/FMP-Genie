@@ -1,0 +1,37 @@
+name: Publish FMP Direct Bridge V2.2.1 - Club Dropdown
+on:
+  push:
+    paths:
+      - "firefox/FMP_Direct_Bridge_V2_2_1_Choix_Club.user.js"
+      - ".github/workflows/publish-fmp-bridge-v2.2.1.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate userscript
+        run: |
+          SCRIPT="firefox/FMP_Direct_Bridge_V2_2_1_Choix_Club.user.js"
+          test -s "$SCRIPT"
+          node --check "$SCRIPT"
+          grep -Fq '// @version      2.2.1' "$SCRIPT"
+          grep -Fq "GM_registerMenuCommand('FMP : choisir le club actif (liste)'" "$SCRIPT"
+          grep -Fq "New Zealand (NT) — ne pas synchroniser" "$SCRIPT"
+          if grep -Fq "const choice=prompt(" "$SCRIPT"; then
+            echo "Old free-text club prompt still present" >&2
+            exit 1
+          fi
+      - name: Publish Firefox userscript only (APK V2.2 unchanged)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="fmp-widget-v2.2.1"
+          SCRIPT="FMP_Direct_Bridge_V2_2_1_Choix_Club.user.js"
+          cp "firefox/$SCRIPT" "$SCRIPT"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FMP Direct Bridge V2.2.1 - selection des clubs" --notes "Mise a jour du script Firefox uniquement, compatible avec APK FMP Mes Transferts V2.2. Menu tactile a liste deroulante pour Circle SC, Kazakh Very Nice United et Chicken Run SC. New Zealand (NT) exclue. Cle de liaison conservee, aucune modification du format des donnees, des comptes a rebours, de l OCR ni du widget. Ne laissez pas les deux userscripts V2.2.0 et V2.2.1 actifs en meme temps." --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" "$SCRIPT" --clobber
